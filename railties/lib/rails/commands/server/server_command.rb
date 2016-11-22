@@ -6,22 +6,18 @@ require "rails/dev_caching"
 
 module Rails
   class Server < ::Rack::Server
-    
     def initialize(options = nil)
       @default_options = options.nil? ? {} : @default_options
       super
       set_environment
     end
+
     # TODO: this is no longer required but we keep it for the moment to support older config.ru files.
     def app
       @app ||= begin
         app = super
         app.respond_to?(:to_app) ? app.to_app : app
       end
-    end
-
-    def opt_parser
-      Options.new
     end
 
     def set_environment
@@ -47,15 +43,7 @@ module Rails
     end
 
     def default_options
-      super.merge(
-        Port:               ENV.fetch("PORT", 3000).to_i,
-        Host:               ENV.fetch("HOST", "localhost").dup,
-        DoNotReverseLookup: true,
-        environment:        (ENV["RAILS_ENV"] || ENV["RACK_ENV"] || "development").dup,
-        daemonize:          false,
-        caching:            nil,
-        pid:                Options::DEFAULT_PID_PATH,
-        restart_cmd:        restart_command)
+      super.merge(@default_options)
     end
 
     private
@@ -97,14 +85,32 @@ module Rails
 
   module Command
     class ServerCommand < Base # :nodoc:
-      def help
-        puts Rails::Server::Options.new.option_parser(Hash.new)
+      DEFAULT_PID_PATH = File.expand_path("tmp/pids/server.pid").freeze
+
+      class_option :port, aliases: "-p", type: :numeric,
+        desc: "Runs Rails on the specified port.", banner: :port, default: 3000
+      class_option :binding, aliases: "-b", type: :string, default: "localhost",
+        desc: "Binds Rails to the specified IP.", banner: :IP
+      class_option :config, aliases: "-c", type: :string, default: "config.ru",
+        desc: "Uses a custom rackup configuration.", banner: :file
+      class_option :daemon, aliases: "-d", type: :boolean, default: false,
+        desc: "Runs server as a Daemon."
+      class_option :environment, aliases: "-e", type: :string,
+        desc: "Specifies the environment to run this server under (development/test/production).", banner: :name
+      class_option :pid, aliases: "-P", type: :string, default: DEFAULT_PID_PATH,
+        desc: "Specifies the PID file."
+      class_option "dev-caching", aliases: "-C", type: :boolean, default: nil,
+        desc: "Specifies whether to perform caching in development."
+
+      def initialize(*)
+        super
+        @server = args.shift
+        @log_stdout = options[:daemon].blank? && (options[:environment] || Rails.env) == "development"
       end
 
       def perform
         set_application_directory!
-
-        Rails::Server.new.tap do |server|
+        Rails::Server.new(server_options).tap do |server|
           # Require application after server sets environment to propagate
           # the --environment option.
           require APP_PATH
@@ -112,6 +118,39 @@ module Rails
           server.start
         end
       end
+
+      private
+        def server_options
+          {
+            server:             @server,
+            log_stdout:         @log_stdout,
+            Port:               port,
+            Host:               host,
+            DoNotReverseLookup: true,
+            config:             options[:config],
+            environment:        environment,
+            daemonize:          options[:daemon],
+            pid:                options[:pid],
+            caching:            options["dev-caching"],
+            restart_cmd:        restart_command
+          }
+        end
+
+        def port
+          ENV.fetch("PORT", options[:port]).to_i
+        end
+
+        def host
+          ENV.fetch("HOST", options[:binding])
+        end
+
+        def environment
+          options[:environment] || Rails::Command.environment
+        end
+
+        def restart_command
+          "bin/rails server #{ARGV.join(' ')}"
+        end
     end
   end
 end
